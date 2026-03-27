@@ -2,27 +2,41 @@
 const fs = require("fs").promises;
 const path = require("path");
 const { spawn } = require("child_process");
+const readline = require("readline");
 
-const INSTALL_DIR = process.cwd();
+let INSTALL_DIR = process.cwd();
 const FILES_TO_FETCH = ["server.js", "package.json"];
 let REPO_BASE = "https://raw.githubusercontent.com/npask/NovaPlay/main";
 const isDevBeta = process.argv.includes("devbeta=true");
+const isDebug = process.argv.includes("--debug");
 
 if (isDevBeta) {
   REPO_BASE = "https://raw.githubusercontent.com/npask/NovaPlay/developing";
   console.log("⚡ Running in DEV/BETA mode!");
 }
 
+if (isDebug) console.log("🐞 Debug mode ON: verbose logging enabled");
+
+// --- Einfache Frage an den Nutzer
+function ask(question) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise(resolve => rl.question(question, ans => { rl.close(); resolve(ans); }));
+}
+
 // --- Fetch file vom GitHub Repo
 const fetchFile = async (file) => {
+  console.log(`⬇ Fetching ${file} from ${REPO_BASE}...`);
   const res = await fetch(`${REPO_BASE}/${file}`);
   if (!res.ok) throw new Error(`Failed to fetch ${file}`);
-  return await res.text();
+  const data = await res.text();
+  console.log(`✔ Fetched ${file}`);
+  return data;
 };
 
 // --- Installiert ein Paket direkt vom npm-Tarball, keine Nebendependencies
 async function installDep(dep, version = "latest") {
   if (dep === "ffmpeg-static") {
+    console.log(`🔍 Checking ffmpeg availability...`);
     const check = spawn("ffmpeg", ["-version"]);
     check.on("error", () => console.warn("⚠ ffmpeg not found. Install manually."));
     check.on("exit", code => {
@@ -33,9 +47,13 @@ async function installDep(dep, version = "latest") {
   }
 
   const tarballUrl = `https://registry.npmjs.org/${dep}/-/${dep}-${version}.tgz`;
+  console.log(`📦 Installing ${dep}@${version} from tarball...`);
 
   return new Promise((resolve) => {
-    const npm = spawn("npm", ["install", tarballUrl, "--silent"], { stdio: "ignore" });
+    const args = ["install", tarballUrl, "--no-save"];
+    if (!isDebug) args.push("--silent");
+
+    const npm = spawn("npm", args, { stdio: isDebug ? "inherit" : "ignore" });
     npm.on("exit", code => {
       if (code === 0) console.log(`✔ ${dep} installed`);
       else console.error(`❌ Failed to install ${dep}`);
@@ -46,13 +64,27 @@ async function installDep(dep, version = "latest") {
 
 // --- Hauptfunktion
 async function install() {
-  console.log("📥 Installing NovaPlay...");
+  console.log(
+    `📥 Installing NovaPlay${isDevBeta ? " BETA mode... (NOTICE: THIS VERSION IS NOT VERIFIED, BUGS CAN HAPPEN)" : "..." }`
+  );
+
+  // Frage den Nutzer, ob er einen anderen Installationsordner nutzen möchte
+  const ans = await ask(`Current install folder is "${INSTALL_DIR}". Do you want to install in a different folder? [y/N] `);
+  if (ans.toLowerCase() === "y") {
+    const newDir = await ask("Enter full path to the new install folder: ");
+    if (newDir) {
+      INSTALL_DIR = path.resolve(newDir);
+      console.log(`🔹 Installation folder changed to: ${INSTALL_DIR}`);
+    } else {
+      console.log("⚠ No path entered, using current folder");
+    }
+  }
 
   // 1️⃣ server.js holen
   try {
     const serverJs = await fetchFile("server.js");
     await fs.writeFile(path.join(INSTALL_DIR, "server.js"), serverJs, "utf8");
-    console.log("✔ Downloaded server.js");
+    console.log("✔ server.js saved");
   } catch (e) {
     console.error(`❌ Error downloading server.js: ${e.message}`);
   }
@@ -62,6 +94,7 @@ async function install() {
   try {
     const pkgData = await fetchFile("package.json");
     pkg = JSON.parse(pkgData);
+    console.log("✔ package.json loaded in memory");
   } catch (e) {
     console.error("❌ Cannot fetch package.json:", e.message);
     return;
@@ -71,6 +104,7 @@ async function install() {
   const depEntries = Object.entries(pkg.dependencies || {});
   for (const [dep, ver] of depEntries) {
     const cleanVersion = ver.replace(/^[^0-9]*/, ""); // entfernt ^ oder ~
+    console.log(`🔹 Installing dependency: ${dep}@${cleanVersion || "latest"}`);
     await installDep(dep, cleanVersion || "latest");
   }
 
@@ -83,7 +117,7 @@ async function install() {
   }
 
   console.log("\n✅ Installation complete!");
-  console.log("Start server with: node server.js");
+  console.log(`Start server with: node ${path.join(INSTALL_DIR, "server.js")}`);
 }
 
 install();
