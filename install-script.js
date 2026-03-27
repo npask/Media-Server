@@ -80,6 +80,13 @@ async function install() {
     }
   }
 
+  if(isDevBeta){
+    const devFilePath = path.join(process.cwd(), 'DELETE THIS IF YOU WANT TO LEAVE THE BETA DEV PROGRAMM.NovaPlayDevFile');
+    fs.ensureFile(devFilePath)
+      .then(() => console.log("📄 Set the next updates to dev beta only"))
+      .catch(err => console.error("❌ Error in setting up the dev beta only updates:", err));
+  }
+
   // 1️⃣ server.js holen
   try {
     const serverJs = await fetchFile("server.js");
