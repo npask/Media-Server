@@ -13,6 +13,7 @@ const isDebug = process.argv.includes("--debug");
 if (isDevBeta) {
   REPO_BASE = "https://raw.githubusercontent.com/npask/NovaPlay/developing";
   console.log("⚡ Running in DEV/BETA mode!");
+  console.log("⚠️ Dev installer last changed at 20:56")
 }
 
 if (isDebug) console.log("🐞 Debug mode ON: verbose logging enabled");
