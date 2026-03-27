@@ -19,3 +19,7 @@ curl -sL https://raw.githubusercontent.com/npask/NovaPlay/main/install-script.js
 > If the install script doesn’t update (GitHub cache issue), use this version:
 > `curl -sL -H "Cache-Control: no-cache" -H "Pragma: no-cache" \
 > "https://raw.githubusercontent.com/npask/NovaPlay/main/install-script.js?nocache=$(date +%s)" | node`
+
+> [!NOTE]
+> If you want to use the DEV-BETA version of Nova Play just use this command instead:
+> `curl -sL https://raw.githubusercontent.com/npask/NovaPlay/developing/install-script.js | node -- devbeta=true`
