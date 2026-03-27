@@ -22,4 +22,4 @@ curl -sL https://raw.githubusercontent.com/npask/NovaPlay/main/install-script.js
 
 > [!NOTE]
 > If you want to use the DEV-BETA version of Nova Play just use this command instead:
-> `curl -sL https://raw.githubusercontent.com/npask/NovaPlay/developing/install-script.js | node -- devbeta=true`
+> `curl -sL https://raw.githubusercontent.com/npask/NovaPlay/developing/install-script.js | node - devbeta=true`
