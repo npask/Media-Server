@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 
 const INSTALL_DIR = process.cwd(); // aktueller Ordner
-const REPO_BASE = 'https://raw.githubusercontent.com/npask/Media-Server/main';
+const REPO_BASE = 'https://raw.githubusercontent.com/npask/NovaPlay/main';
 
 const FILES_TO_FETCH = ['server.js','package.json'];
 
