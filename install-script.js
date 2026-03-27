@@ -74,9 +74,20 @@ async function install() {
   
   await countdown(5);
 
-  if(isDevBeta){
+  if (isDevBeta) {
     const devFilePath = path.join(process.cwd(), 'DELETE THIS IF YOU WANT TO LEAVE THE BETA DEV PROGRAMM.NovaPlayDevFile');
-    fs.ensureFile(devFilePath)
+
+    async function ensureFile(filePath) {
+      const dir = path.dirname(filePath);
+      await fs.promises.mkdir(dir, { recursive: true });
+      try {
+        await fs.promises.access(filePath, fs.constants.F_OK);
+      } catch {
+        await fs.promises.writeFile(filePath, '');
+      }
+    }
+
+    ensureFile(devFilePath)
       .then(() => console.log("📄 Set the next updates to dev beta only"))
       .catch(err => console.error("❌ Error in setting up the dev beta only updates:", err));
   }
