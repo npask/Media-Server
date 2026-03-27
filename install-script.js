@@ -35,7 +35,7 @@ async function installDep(dep, version = "latest") {
   const tarballUrl = `https://registry.npmjs.org/${dep}/-/${dep}-${version}.tgz`;
 
   return new Promise((resolve) => {
-    const npm = spawn("npm", ["install", tarballUrl, "--no-save", "--silent"], { stdio: "ignore" });
+    const npm = spawn("npm", ["install", tarballUrl, "--silent"], { stdio: "ignore" });
     npm.on("exit", code => {
       if (code === 0) console.log(`✔ ${dep} installed`);
       else console.error(`❌ Failed to install ${dep}`);
