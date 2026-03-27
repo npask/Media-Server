@@ -17,32 +17,6 @@ if (isDevBeta) {
 
 if (isDebug) console.log("🐞 Debug mode ON: verbose logging enabled");
 
-// --- Einfache Frage an den Nutzer
-function ask(question, options = {}) {
-  return new Promise(resolve => {
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout
-    });
-
-    let timeoutId;
-    if (options.timeout) {
-      timeoutId = setTimeout(() => {
-        rl.close();
-        resolve(options.default || '');
-      }, options.timeout);
-    }
-
-    rl.question(question, answer => {
-      if (timeoutId) clearTimeout(timeoutId);
-      rl.close();
-      answer = answer.trim();
-      if (!answer && options.default !== undefined) return resolve(options.default);
-      resolve(answer);
-    });
-  });
-}
-
 // --- Fetch file vom GitHub Repo
 const fetchFile = async (file) => {
   console.log(`⬇ Fetching ${file} from ${REPO_BASE}...`);
@@ -88,17 +62,17 @@ async function install() {
     `📥 Installing NovaPlay${isDevBeta ? " BETA mode... (NOTICE: THIS VERSION IS NOT VERIFIED, BUGS CAN HAPPEN)" : "..." }`
   );
 
-  // Frage den Nutzer, ob er einen anderen Installationsordner nutzen möchte
-  const ans = await ask(`Current install folder is "${INSTALL_DIR}". Do you want to install in a different folder? [y/N] `, { default: 'N', timeout: 60000 });
-  if (ans.toLowerCase() === "y") {
-    const newDir = await ask("Enter full path to the new install folder: ");
-    if (newDir) {
-      INSTALL_DIR = path.resolve(newDir);
-      console.log(`🔹 Installation folder changed to: ${INSTALL_DIR}`);
-    } else {
-      console.log("⚠ No path entered, using current folder");
+  // Warte und sage dem user das
+  async function countdown(seconds) {
+    console.log(`\n⚡ Installing to "${INSTALL_DIR}" in ${seconds} seconds... (CTRL+C to cancel)`);
+    for (let i = seconds; i > 0; i--) {
+      process.stdout.write(`⏳ ${i}...\r`);
+      await new Promise(res => setTimeout(res, 1000));
     }
+    console.log("✅ Starting installation...\n");
   }
+  
+  await countdown(5);
 
   if(isDevBeta){
     const devFilePath = path.join(process.cwd(), 'DELETE THIS IF YOU WANT TO LEAVE THE BETA DEV PROGRAMM.NovaPlayDevFile');
