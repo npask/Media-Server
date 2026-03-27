@@ -1,4 +1,4 @@
-// install-script.js (CommonJS, läuft ohne package.json)
+// install-script.js
 const fs = require("fs").promises;
 const path = require("path");
 const { execSync } = require("child_process");
@@ -7,41 +7,36 @@ const readline = require("readline");
 const INSTALL_DIR = process.cwd();
 let REPO_BASE = "https://raw.githubusercontent.com/npask/NovaPlay/main";
 const FILES_TO_FETCH = ["server.js", "package.json"];
-
-// Prüfen ob "devbeta=true" als Argument übergeben wurde
-const isDevBeta = process.argv.some(arg => arg === "devbeta=true");
+const isDevBeta = process.argv.includes("devbeta=true");
 
 if (isDevBeta) {
-    REPO_BASE = "https://raw.githubusercontent.com/npask/NovaPlay/developing";
+  REPO_BASE = "https://raw.githubusercontent.com/npask/NovaPlay/developing";
   console.log("⚡ Running in DEV/BETA mode!");
 }
 
-// Einfaches readline Interface
-function ask(question) {
+const ask = question => new Promise(resolve => {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  return new Promise(resolve => rl.question(question, ans => { rl.close(); resolve(ans); }));
-}
+  rl.question(question, ans => { rl.close(); resolve(ans); });
+});
 
-// Install-Funktion
 async function install() {
   console.log("📥 Installing NovaPlay...");
 
-  // 1️⃣ Alle Files downloaden
+  // 🔹 1. Files herunterladen
   for (const file of FILES_TO_FETCH) {
     try {
       const url = `${REPO_BASE}/${file}`;
       const res = await fetch(url);
       if (!res.ok) throw new Error(`Failed to fetch ${file}`);
       const data = await res.text();
-      const targetPath = path.join(INSTALL_DIR, file);
-      await fs.writeFile(targetPath, data, "utf8");
+      await fs.writeFile(path.join(INSTALL_DIR, file), data, "utf8");
       console.log(`✔ Downloaded ${file}`);
     } catch (e) {
-      console.error(`❌ Error downloading ${file}:`, e.message);
+      console.error(`❌ Error downloading ${file}: ${e.message}`);
     }
   }
 
-  // 2️⃣ Dependencies aus package.json laden
+  // 🔹 2. Dependencies laden (immer frisch)
   let pkg;
   try {
     const pkgData = await fs.readFile(path.join(INSTALL_DIR, "package.json"), "utf8");
@@ -51,50 +46,44 @@ async function install() {
     return;
   }
 
-  const deps = { ...pkg.dependencies, ...pkg.devDependencies };
-  const depNames = Object.keys(deps);
+  // Dependencies in einer Zeile
+  let depNames = Object.keys({ ...pkg.dependencies });
 
-  // 3️⃣ Alle Abhängigkeiten einzeln installieren
+  // 🔹 3. Jede Dependency einzeln installieren, ohne npm extra deps
   for (const dep of depNames) {
     try {
       console.log(`📦 Installing ${dep}...`);
+
       if (dep === "ffmpeg-static") {
-        // Check Plattform
         if (process.env.TERMUX_VERSION) {
           const ans = await ask("⚠ ffmpeg-static failed. Install system ffmpeg via 'pkg install ffmpeg'? [Y/n] ");
           if (ans.toLowerCase() === "y" || ans === "") {
             execSync("pkg install ffmpeg -y", { stdio: "inherit" });
-            console.log("✔ ffmpeg installed via Termux pkg.");
-            continue; // ffmpeg-static überspringen
-          } else {
-            console.warn("⚠ Skipping ffmpeg-static. Thumbnails might not work.");
-            continue;
-          }
+            console.log("✔ ffmpeg installed via Termux pkg."); continue;
+          } else { console.warn("⚠ Skipping ffmpeg-static. Thumbnails might not work."); continue; }
         } else if (process.platform === "linux") {
           const ans = await ask("⚠ ffmpeg-static failed. Try 'apt-get install ffmpeg'? [Y/n] ");
           if (ans.toLowerCase() === "y" || ans === "") {
             execSync("sudo apt-get update && sudo apt-get install -y ffmpeg", { stdio: "inherit" });
-            console.log("✔ ffmpeg installed via apt-get.");
-            continue;
-          } else {
-            console.warn("⚠ Skipping ffmpeg-static. Thumbnails might not work.");
-            continue;
-          }
-        } else {
-          console.warn("⚠ ffmpeg-static failed. Skipping installation. Thumbnails might not work.");
-          continue;
-        }
+            console.log("✔ ffmpeg installed via apt-get."); continue;
+          } else { console.warn("⚠ Skipping ffmpeg-static. Thumbnails might not work."); continue; }
+        } else { console.warn("⚠ ffmpeg-static failed. Skipping installation."); continue; }
       }
 
-      execSync(`npm install ${dep}`, { stdio: "inherit" });
+      // Installiere nur das aktuelle Paket, keine Extras, keine Output
+      execSync(`npm install ${dep} --no-save --legacy-peer-deps --silent`, { stdio: "ignore" });
+
+      // Update die Liste frisch nach jeder Installation
+      const updatedPkgData = await fs.readFile(path.join(INSTALL_DIR, "package.json"), "utf8");
+      depNames = Object.keys({ ...JSON.parse(updatedPkgData).dependencies });
+
       console.log(`✔ ${dep} installed`);
     } catch (e) {
-      console.error(`❌ Failed to install ${dep}:`, e.message);
+      console.error(`❌ Failed to install ${dep}: ${e.message}`);
     }
   }
 
-  console.log("\n✅ Installation complete!");
-  console.log("Start server with: node server.js");
+  console.log("\n✅ Installation complete! Start server with: node server.js");
 }
 
 install();
