@@ -79,7 +79,7 @@ const videoExtensions = ['.mp4', '.mkv', '.webm', '.avi'];
 const audioExtensions = ['.mp3', '.m4a', '.wav', '.ogg'];
 
 // --- Update funktion ---
-const SERVER_VERSION = '0.0.5';
+const SERVER_VERSION = '0.0.6 BETA';
 const UPDATE_CHECK_INTERVAL = 1000 * 60 * 15;
 const isBeta = await checkBetaFile();
 const REMOTE_SERVER_JS_URL = isBeta == true ? 'https://raw.githubusercontent.com/npask/NovaPlay/developing/server.js': 'https://raw.githubusercontent.com/npask/NovaPlay/main/server.js';
@@ -174,44 +174,48 @@ function enqueueScanTask(filePath, type, category) {
     scanQueue.push({ filePath, type, category });
 }
 
-async function processScanQueue() {
+async function processScanQueue(newItems) {
     while(scanQueue.length) {
         const task = scanQueue.shift();
         activeWorkers++;
         scanProgress.activeWorkers = activeWorkers;
         scanProgress.currentFile = path.basename(task.filePath);
 
-        try { await processFile(task.filePath, task.type, task.category); }
-        catch (err) { console.warn('Scan Fehler bei', task.filePath, err.message); }
+        try {
+            const item = processFile(task.filePath, task.type, task.category);
+            if(item) newItems.push(item);
+        }
+        catch (err) {
+            console.warn('Scan Fehler bei', task.filePath, err.message);
+        }
 
         scanProgress.done++;
         activeWorkers--;
         scanProgress.activeWorkers = activeWorkers;
     }
-    scanProgress.status = 'finished';
+
     scanProgress.currentFile = null;
 }
 
 // --- Datei tatsächlich verarbeiten ---
-async function processFile(fullPath, type, category) {
+function processFile(fullPath, type, category) {
     const ext = path.extname(fullPath).toLowerCase();
+
     if (
         (type === 'video' && videoExtensions.includes(ext)) ||
         (type === 'music' && audioExtensions.includes(ext))
     ) {
-        let library = await fs.readJson(libraryFile).catch(() => []);
-        if (!library.some(v => v.path === fullPath)) {
-            library.push({
-                title: path.parse(fullPath).name,
-                category: category || '',
-                path: fullPath,
-                type,
-                watched: false,
-                position: 0
-            });
-            await fs.writeJson(libraryFile, library, { spaces: 2 });
-        }
+        return {
+            title: path.parse(fullPath).name,
+            category: category || '',
+            path: fullPath,
+            type,
+            watched: false,
+            position: 0
+        };
     }
+
+    return null;
 }
 
 async function scanMedia(mediaRoot, type) {
@@ -260,20 +264,25 @@ async function scanMedia(mediaRoot, type) {
     await scanFolder(mediaRoot);
 
     // Queue abarbeiten
+    const newItems = [];
+
     const workers = [];
     for (let i = 0; i < MAX_WORKERS; i++) {
-        workers.push(processScanQueue());
+        workers.push(processScanQueue(newItems));
     }
     await Promise.all(workers);
 
-    // --- Nach dem Scan: doppelte Einträge entfernen ---
+    // neue Items anhängen
     library = await fs.readJson(libraryFile).catch(() => []);
+    library.push(...newItems);
+
     const uniqueMap = new Map();
     for (const item of library) {
         if (!uniqueMap.has(item.path)) {
             uniqueMap.set(item.path, item);
         }
     }
+
     const cleanedLibrary = Array.from(uniqueMap.values());
     await fs.writeJson(libraryFile, cleanedLibrary, { spaces: 2 });
 
