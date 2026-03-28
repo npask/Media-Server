@@ -22,11 +22,12 @@ async function setupFFmpeg() {
         try {
             ffmpeg.setFfmpegPath(ffmpegPath);
             await new Promise((resolve, reject) => {
-                exec(`${ffmpegPath} -version`, (err, stdout) => err ? reject(err) : resolve(stdout));
+                exec(`cd ${path.dirname(ffmpegPath)} && ${path.basename(ffmpegPath)} -version`, (err, stdout) => err ? reject(err) : resolve(stdout));
             });
             console.log("✅ ffmpeg-static wird verwendet");
             return;
         } catch (e) {
+            console.log(e)
             console.warn("⚠ ffmpeg-static funktioniert nicht, fallback auf System ffmpeg");
         }
     }
@@ -51,7 +52,8 @@ async function checkBetaFile() {
     const exists = await fs.pathExists(devFilePath);
     if (exists) {
         console.log("⚡ Beta/Dev-Program active");
-    }
+        return true;
+    } else {return false;}
 }
 
 const app = express();
@@ -79,7 +81,7 @@ const audioExtensions = ['.mp3', '.m4a', '.wav', '.ogg'];
 const SERVER_VERSION = '0.0.1 BETA';
 const UPDATE_CHECK_INTERVAL = 1000 * 60 * 15;
 const isBeta = await checkBetaFile();
-const REMOTE_SERVER_JS_URL = isBeta ? 'https://raw.githubusercontent.com/npask/NovaPlay/developing/server.js': 'https://raw.githubusercontent.com/npask/NovaPlay/main/server.js';
+const REMOTE_SERVER_JS_URL = isBeta == true ? 'https://raw.githubusercontent.com/npask/NovaPlay/developing/server.js': 'https://raw.githubusercontent.com/npask/NovaPlay/main/server.js';
 const LOCAL_SERVER_JS = process.argv[1];
 
 // --- Prüfen ob Internet verfügbar ---
@@ -92,7 +94,7 @@ async function isOnline() {
 // --- Update prüfen und ggf. anwenden ---
 async function checkForUpdate() {
     const online = await isOnline();
-    if (!online) return console.log('Kein Internet – Update übersprungen');
+    if (!online) return console.log('Kein Internet - Update übersprungen');
 
     try {
         // Remote server.js laden
@@ -155,25 +157,36 @@ async function listFolders(basePath) {
 // --- Scan & Library ---
 async function scanMedia(mediaRoot, type) {
     const library = [];
-    try {
-        const categories = await fs.readdir(mediaRoot);
-        for (let cat of categories) {
-            const catPath = path.join(mediaRoot, cat);
+
+    async function scanFolder(folder, categoryName = null) {
+        let items;
+        try {
+            items = await fs.readdir(folder);
+        } catch {
+            return;
+        }
+
+        for (const item of items) {
+            const fullPath = path.join(folder, item);
             let stat;
-            try { stat = await fs.stat(catPath); } catch { continue; }
-            if (!stat.isDirectory()) continue;
+            try { stat = await fs.stat(fullPath); } catch { continue; }
 
-            let files;
-            try { files = await fs.readdir(catPath); } catch { continue; }
+            if (stat.isDirectory()) {
+                // rekursiv weiter scannen
+                // Kategorie ist nur das erste Level unter mediaRoot
+                const newCategory = categoryName || item;
+                await scanFolder(fullPath, newCategory);
+            } else {
+                const ext = path.extname(item).toLowerCase();
 
-            for (let f of files) {
-                const ext = path.extname(f).toLowerCase();
-                if ((type==='video' && videoExtensions.includes(ext)) ||
-                    (type==='music' && audioExtensions.includes(ext))) {
+                if (
+                    (type === 'video' && videoExtensions.includes(ext)) ||
+                    (type === 'music' && audioExtensions.includes(ext))
+                ) {
                     library.push({
-                        title: path.parse(f).name,
-                        category: cat,
-                        path: path.join(catPath, f),
+                        title: path.parse(item).name,
+                        category: categoryName || '', // Root-Dateien bekommen leere Kategorie
+                        path: fullPath,
                         type,
                         watched: false,
                         position: 0
@@ -181,15 +194,18 @@ async function scanMedia(mediaRoot, type) {
                 }
             }
         }
-        await fs.ensureDir('./data');
-        let existing = await fs.readJson(libraryFile).catch(()=>[]);
-        existing = existing.filter(v => !library.some(n => n.path === v.path));
-        await fs.writeJson(libraryFile, [...existing, ...library], { spaces:2 });
+    }
 
-        // Thumbnail Worker starten parallel
-        generateThumbnails(mediaRoot);
+    await scanFolder(mediaRoot);
 
-    } catch(e){ console.error(e); }
+    await fs.ensureDir('./data');
+
+    let existing = await fs.readJson(libraryFile).catch(() => []);
+    existing = existing.filter(v => !library.some(n => n.path === v.path));
+    await fs.writeJson(libraryFile, [...existing, ...library], { spaces: 2 });
+
+    generateThumbnails(mediaRoot);
+
     return library;
 }
 
@@ -238,6 +254,12 @@ async function generateThumbnails(rootFolder) {
                     if (!await fs.pathExists(thumbPath)) {
                         progressState.currentFile = f;
                         progressState.total += 1;
+
+                        if (await fs.pathExists(thumbPath)) { // SKIP if already exists
+                            progressState.done += 1;
+                            continue;
+                        }
+
                         console.log(`Generating thumbnail for ${f} ...`);
                         try {
                             await generateThumbnail(fullPath, thumbPath);
