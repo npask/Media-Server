@@ -79,7 +79,7 @@ const videoExtensions = ['.mp4', '.mkv', '.webm', '.avi'];
 const audioExtensions = ['.mp3', '.m4a', '.wav', '.ogg'];
 
 // --- Update funktion ---
-const SERVER_VERSION = '0.0.1 DEV';
+const SERVER_VERSION = '0.0.2 DEV';
 const UPDATE_CHECK_INTERVAL = 1000 * 60 * 15;
 const isBeta = await checkBetaFile();
 const REMOTE_SERVER_JS_URL = isBeta == true ? 'https://raw.githubusercontent.com/npask/NovaPlay/developing/server.js': 'https://raw.githubusercontent.com/npask/NovaPlay/main/server.js';
@@ -99,7 +99,7 @@ async function checkForUpdate() {
 
     try {
         // Remote server.js laden
-        const res = await fetch(REMOTE_SERVER_JS_URL);
+        const res = await fetch(REMOTE_SERVER_JS_URL, { cache: 'no-store' });
         if (!res.ok) return console.log('Remote server.js konnte nicht geladen werden');
         const remoteCode = await res.text();
 
@@ -118,7 +118,7 @@ async function checkForUpdate() {
             await fs.writeFile(LOCAL_SERVER_JS, remoteCode);
 
             console.log('🎉 Update installiert - Server wird neu gestartet');
-            exec(`node ${LOCAL_SERVER_JS}`, (err, stdout, stderr) => {
+            exec(`node "${LOCAL_SERVER_JS}"`, (err, stdout, stderr) => {
                 if (err) console.error(err);
                 process.exit(0); // alter Prozess beendet sich
             });
@@ -313,7 +313,7 @@ app.get('/thumbnail-progress', (req,res)=>{
 });
 
 // --- UI Helper ---
-function renderPage(title, body){
+function renderPage(title, body, headerTitle){
     return `
         <html>
         <head>
@@ -362,7 +362,7 @@ function renderPage(title, body){
         </style>
         </head>
         <body>
-        <header>NovaPlay</header>
+        <header>NovaPlay • ${SERVER_VERSION} • ${headerTitle}</header>
         <div class="container">
         ${body}
         </div>
@@ -382,10 +382,10 @@ app.get('/', async (req,res)=>{
             <label>Video Ordner:</label>
             <select name="videoPath"><option value="">-- Ordner wählen --</option>${folders.map(f=>`<option>${f}</option>`).join('')}</select><br>
             <label>Oder eigenen Pfad:</label><input name="customVideo" placeholder="D:/Videos"/><br><br>
-            <label>Musik Ordner:</label><input name="musicPath" placeholder="D:/Musik"/><br><br>
+            <label>Music Ordner:</label><input name="musicPath" placeholder="D:/Music"/><br><br>
             <button type="submit">Setup</button>
             </form>
-        `));
+        `, "Setup"));
     }
     res.redirect('/login');
 });
@@ -419,7 +419,7 @@ app.get('/login', async (req,res)=>{
                 <input name="username" required/>
                 <button type="submit">Login</button>
             </form>
-        `));
+        `, "Login"));
     }
 });
 
@@ -640,7 +640,7 @@ app.get('/library', async (req,res)=>{
         `;
     }
 
-    // HOME = AI Empfehlungen (20 Videos + 20 Musik)
+    // HOME = AI Empfehlungen (20 Videos + 20 Music)
     if(mode === "home"){
         const videoRecs = getAIRecommendations(account, library, "video", 20);
         const musicRecs = getAIRecommendations(account, library, "music", 20);
@@ -649,7 +649,7 @@ app.get('/library', async (req,res)=>{
             <nav>
                 <a href="/library?mode=home">Home</a>
                 <a href="/library?mode=videos">Videos</a>
-                <a href="/library?mode=music">Musik</a>
+                <a href="/library?mode=music">Music</a>
             </nav>
 
             <h2 style="margin-top:20px;">🔥 Für dich (Videos)</h2>
@@ -657,7 +657,7 @@ app.get('/library', async (req,res)=>{
                 ${videoRecs.map(makeCard).join("")}
             </div>
 
-            <h2 style="margin-top:40px;">🎵 Für dich (Musik)</h2>
+            <h2 style="margin-top:40px;">🎵 Für dich (Music)</h2>
             <div class="media-list">
                 ${musicRecs.map(makeCard).join("")}
             </div>
@@ -676,7 +676,7 @@ app.get('/library', async (req,res)=>{
                     background: linear-gradient(135deg,#222,#111);
                 }
             </style>
-        `));
+        `, "Home"));
     }
 
     // VIDEOS TAB = ALLE Videos
@@ -687,7 +687,7 @@ app.get('/library', async (req,res)=>{
             <nav>
                 <a href="/library?mode=home">Home</a>
                 <a href="/library?mode=videos">Videos</a>
-                <a href="/library?mode=music">Musik</a>
+                <a href="/library?mode=music">Music</a>
             </nav>
 
             <h2 style="margin-top:20px;">🎬 Alle Videos</h2>
@@ -697,21 +697,21 @@ app.get('/library', async (req,res)=>{
 
             <br>
             <a href="/scan">🔄 Medien neu scannen</a>
-        `));
+        `, "Videos"));
     }
 
-    // MUSIC TAB = ALLE Musik
+    // MUSIC TAB = ALLE Music
     if(mode === "music"){
         const allMusic = library.filter(v => v.type === "music");
 
-        return res.send(renderPage("Musik", `
+        return res.send(renderPage("Music", `
             <nav>
                 <a href="/library?mode=home">Home</a>
                 <a href="/library?mode=videos">Videos</a>
-                <a href="/library?mode=music">Musik</a>
+                <a href="/library?mode=music">Music</a>
             </nav>
 
-            <h2 style="margin-top:20px;">🎵 Alle Musik</h2>
+            <h2 style="margin-top:20px;">🎵 Alle Music</h2>
             <div class="media-list">
                 ${allMusic.map(makeCard).join("")}
             </div>
@@ -730,7 +730,7 @@ app.get('/library', async (req,res)=>{
                     background: linear-gradient(135deg,#222,#111);
                 }
             </style>
-        `));
+        `, "Music"));
     }
 
     res.redirect("/library?mode=home");
@@ -907,7 +907,7 @@ app.get('/play', async (req,res)=>{
             .post-overlay.fade-in{ opacity:1; transform:translateY(0); backdrop-filter: blur(8px); display:flex; }
             .player-wrapper.ended video{ filter: blur(8px); transition: filter 0.7s ease;}
         </style>
-    `));
+    `, "${tab} Player"));
 });
 
 // --- Rescan ---
