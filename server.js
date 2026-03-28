@@ -79,7 +79,7 @@ const videoExtensions = ['.mp4', '.mkv', '.webm', '.avi'];
 const audioExtensions = ['.mp3', '.m4a', '.wav', '.ogg'];
 
 // --- Update funktion ---
-const SERVER_VERSION = '0.0.2 DEV';
+const SERVER_VERSION = '0.0.5';
 const UPDATE_CHECK_INTERVAL = 1000 * 60 * 15;
 const isBeta = await checkBetaFile();
 const REMOTE_SERVER_JS_URL = isBeta == true ? 'https://raw.githubusercontent.com/npask/NovaPlay/developing/server.js': 'https://raw.githubusercontent.com/npask/NovaPlay/main/server.js';
@@ -117,8 +117,11 @@ async function checkForUpdate() {
             // Update schreiben
             await fs.writeFile(LOCAL_SERVER_JS, remoteCode);
 
-            console.log('🎉 Update installed - Exiting');
-            process.exit(0);
+            console.log('🎉 Update installiert - Server wird neu gestartet');
+            exec(`node "${LOCAL_SERVER_JS}"`, (err, stdout, stderr) => {
+                if (err) console.error(err);
+                process.exit(0); // alter Prozess beendet sich
+            });
         } else {
             console.log('🔵 Server is up-to-date!');
         }
@@ -152,17 +155,89 @@ async function listFolders(basePath) {
     return result;
 }
 
-// --- Scan & Library ---
+// --- Scan Worker & Library ---
+const scanQueue = [];
+let activeWorkers = 0;
+const MAX_WORKERS = 2; // Anzahl paralleler Scan-Worker
+
+// --- Progress Status für Website ---
+const scanProgress = {
+    total: 0,
+    done: 0,
+    currentFile: null,
+    activeWorkers: 0,
+    status: 'idle' // idle | running | finished
+};
+
+// --- Scan Funktion ---
+function enqueueScanTask(filePath, type, category) {
+    scanQueue.push({ filePath, type, category });
+}
+
+async function processScanQueue() {
+    while(scanQueue.length) {
+        const task = scanQueue.shift();
+        activeWorkers++;
+        scanProgress.activeWorkers = activeWorkers;
+        scanProgress.currentFile = path.basename(task.filePath);
+
+        try { await processFile(task.filePath, task.type, task.category); }
+        catch (err) { console.warn('Scan Fehler bei', task.filePath, err.message); }
+
+        scanProgress.done++;
+        activeWorkers--;
+        scanProgress.activeWorkers = activeWorkers;
+    }
+    scanProgress.status = 'finished';
+    scanProgress.currentFile = null;
+}
+
+// --- Datei tatsächlich verarbeiten ---
+async function processFile(fullPath, type, category) {
+    const ext = path.extname(fullPath).toLowerCase();
+    if (
+        (type === 'video' && videoExtensions.includes(ext)) ||
+        (type === 'music' && audioExtensions.includes(ext))
+    ) {
+        let library = await fs.readJson(libraryFile).catch(() => []);
+        if (!library.some(v => v.path === fullPath)) {
+            library.push({
+                title: path.parse(fullPath).name,
+                category: category || '',
+                path: fullPath,
+                type,
+                watched: false,
+                position: 0
+            });
+            await fs.writeJson(libraryFile, library, { spaces: 2 });
+        }
+    }
+}
+
 async function scanMedia(mediaRoot, type) {
-    const library = [];
+    scanProgress.status = 'running';
+    scanProgress.total = 0;
+    scanProgress.done = 0;
+    scanProgress.currentFile = null;
+
+    // aktuelle Library laden
+    let library = await fs.readJson(libraryFile).catch(() => []);
+    const existingPaths = new Set(library.map(v => v.path));
+
+    // --- Alte Einträge prüfen, ob sie noch existieren ---
+    library = library.filter(item => {
+        if (!fs.existsSync(item.path)) return false; // Datei existiert nicht mehr → raus
+        return true;
+    });
+    await fs.writeJson(libraryFile, library, { spaces: 2 });
+
+    // aktualisiertes Set erstellen
+    existingPaths.clear();
+    library.forEach(v => existingPaths.add(v.path));
 
     async function scanFolder(folder, categoryName = null) {
-        let items;
-        try {
-            items = await fs.readdir(folder);
-        } catch {
-            return;
-        }
+        let items = [];
+        try { items = await fs.readdir(folder); } catch { return; }
 
         for (const item of items) {
             const fullPath = path.join(folder, item);
@@ -170,25 +245,13 @@ async function scanMedia(mediaRoot, type) {
             try { stat = await fs.stat(fullPath); } catch { continue; }
 
             if (stat.isDirectory()) {
-                // rekursiv weiter scannen
-                // Kategorie ist nur das erste Level unter mediaRoot
                 const newCategory = categoryName || item;
                 await scanFolder(fullPath, newCategory);
             } else {
-                const ext = path.extname(item).toLowerCase();
-
-                if (
-                    (type === 'video' && videoExtensions.includes(ext)) ||
-                    (type === 'music' && audioExtensions.includes(ext))
-                ) {
-                    library.push({
-                        title: path.parse(item).name,
-                        category: categoryName || '', // Root-Dateien bekommen leere Kategorie
-                        path: fullPath,
-                        type,
-                        watched: false,
-                        position: 0
-                    });
+                if (!existingPaths.has(fullPath)) {
+                    scanProgress.total++;
+                    enqueueScanTask(fullPath, type, categoryName);
+                    existingPaths.add(fullPath);
                 }
             }
         }
@@ -196,16 +259,34 @@ async function scanMedia(mediaRoot, type) {
 
     await scanFolder(mediaRoot);
 
-    await fs.ensureDir('./data');
+    // Queue abarbeiten
+    const workers = [];
+    for (let i = 0; i < MAX_WORKERS; i++) {
+        workers.push(processScanQueue());
+    }
+    await Promise.all(workers);
 
-    let existing = await fs.readJson(libraryFile).catch(() => []);
-    existing = existing.filter(v => !library.some(n => n.path === v.path));
-    await fs.writeJson(libraryFile, [...existing, ...library], { spaces: 2 });
+    // --- Nach dem Scan: doppelte Einträge entfernen ---
+    library = await fs.readJson(libraryFile).catch(() => []);
+    const uniqueMap = new Map();
+    for (const item of library) {
+        if (!uniqueMap.has(item.path)) {
+            uniqueMap.set(item.path, item);
+        }
+    }
+    const cleanedLibrary = Array.from(uniqueMap.values());
+    await fs.writeJson(libraryFile, cleanedLibrary, { spaces: 2 });
 
-    generateThumbnails(mediaRoot);
+    scanProgress.status = 'finished';
+    scanProgress.currentFile = null;
 
-    return library;
+    return cleanedLibrary;
 }
+
+// --- Route zum Abrufen von Scan-Status ---
+app.get('/scan-progress', (req,res)=>{
+    res.json(scanProgress);
+});
 
 // --- Thumbnail Worker ---
 
@@ -249,23 +330,21 @@ async function generateThumbnails(rootFolder) {
                 const ext = path.extname(f).toLowerCase();
                 if (videoExtensions.includes(ext)) {
                     const thumbPath = path.join(cacheFolder, `Thumbnail_${path.parse(f).name}.webp`);
-                    if (!await fs.pathExists(thumbPath)) {
-                        progressState.currentFile = f;
-                        progressState.total += 1;
+                    progressState.total += 1;
+                    progressState.currentFile = f;
 
-                        if (await fs.pathExists(thumbPath)) { // SKIP if already exists
-                            progressState.done += 1;
-                            continue;
-                        }
-
-                        console.log(`Generating thumbnail for ${f} ...`);
-                        try {
-                            await generateThumbnail(fullPath, thumbPath);
-                        } catch (err) {
-                            console.warn(`⚠ Skipping broken file: ${f}`, err.message);
-                        }
-                        progressState.done += 1;
+                    if (await fs.pathExists(thumbPath)) {
+                        progressState.done++;
+                        continue;
                     }
+
+                    console.log(`Generating thumbnail for ${f} ...`);
+                    try {
+                        await generateThumbnail(fullPath, thumbPath);
+                    } catch (err) {
+                        console.warn(`⚠ Skipping broken file: ${f}`, err.message);
+                    }
+                    progressState.done += 1;
                 }
             }
         }
@@ -309,12 +388,48 @@ app.get('/thumbnail-progress', (req,res)=>{
     res.json(progressState);
 });
 
+function escapeHTML(str) {
+  return str
+    .replace(/&/g, "&amp;")   // & muss zuerst
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 // --- UI Helper ---
 function renderPage(title, body, headerTitle){
+    let scanWorkerDisplay = "";
+    let thumbnailWorkerDisplay = "";
+
+    if(scanProgress.status === "running") {
+        // Scan Worker Details
+        scanWorkerDisplay = `
+            <div class='worker scan'>
+                <strong>Scan Worker:</strong> Scanning for Videos and Music... ¦ 
+                ${scanProgress.currentFile ? `Current File: ${scanProgress.currentFile} ¦ ` : ""}
+                ${scanProgress.filesScanned !== undefined ? `Files Scanned: ${scanProgress.filesScanned} / ${scanProgress.totalFiles || "?"} ¦ ` : ""}
+                ${scanProgress.percentage !== undefined ? `Progress: ${scanProgress.percentage.toFixed(1)}%` : ""}
+            </div>
+        `;
+    }
+
+    if(progressState.status == "running"){
+        // Thumbnail Worker Details
+        thumbnailWorkerDisplay = `
+            <div class='worker thumb'>
+                <strong>Thumbnail Worker:</strong> Generating Thumbnails... ¦ 
+                ${progressState.thumbCurrentFile ? `Current File: ${path.basename(progressState.currentFile)} ¦ ` : ""}  
+                ${`Thumbnails Generated: ${progressState.done} / ${progressState.total || "?"} ¦ `} 
+                ${`Progress: ${(( progressState.done / progressState.total) * 100).toFixed(1)}%`}
+            </div>
+        `;
+    }
+
     return `
         <html>
         <head>
-        <title>${title}</title>
+        <title>${escapeHTML(title)}</title>
         <style>
         body { font-family:'Roboto',sans-serif; background:#0f0f0f; color:#fff; margin:0; padding:0; }
         a {text-decoration:none;color:#1db954;} a:hover {color:#1ed760;}
@@ -356,10 +471,59 @@ function renderPage(title, body, headerTitle){
             transform: scale(1.05);
             box-shadow: 0 6px 15px rgba(0,0,0,0.5);
         }
+
+        .activeWorkers{
+            position: fixed;
+            top: 0px;
+            left: 0px;
+            width: 100%;
+            height: max-content;
+            opacity: 0.5;
+            pointer-events: none;
+        }
+
+        .activeWorkers .worker{
+            position: relative;
+            overflow: hidden;
+            text-align: center;
+            padding: 10px;
+            font-weight: bold;
+            color: #fff;
+        }
+
+        .activeWorkers .worker.scan{
+            background: #008291;
+        }
+
+        .activeWorkers .worker.thumb{
+            background: #009142;
+        }
+
+        /* Glint effect */
+        .worker::before {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: -75%;
+            width: 50%;
+            height: 100%;
+            background: linear-gradient(120deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.4) 50%, rgba(255,255,255,0) 100%);
+            transform: skewX(-25deg);
+            animation: shine 1.5s infinite;
+        }
+
+        @keyframes shine {
+            0% { left: -75%; }
+            100% { left: 125%; }
+        }
+
         </style>
         </head>
         <body>
-        <header>NovaPlay • ${SERVER_VERSION} • ${headerTitle}</header>
+        <div class="activeWorkers">
+            ${scanWorkerDisplay}${thumbnailWorkerDisplay}
+        </div>
+        <header>NovaPlay • ${escapeHTML(SERVER_VERSION)} • ${escapeHTML(headerTitle)}</header>
         <div class="container">
         ${body}
         </div>
@@ -436,82 +600,6 @@ app.post('/login', async (req,res)=>{
 
 // --- Help Recommend things ---
 
-function tokenizeTitle(title){
-    return title
-        .toLowerCase()
-        .replace(/[^a-z0-9äöüß ]/gi, ' ')
-        .split(/\s+/)
-        .filter(w => w.length >= 3);
-}
-
-function buildUserTasteProfile(account, library){
-    const watchedTitles = account.watched || [];
-
-    const watchedItems = library.filter(v => watchedTitles.includes(v.title));
-    const wordScore = {};
-    const categoryScore = {};
-
-    for(const item of watchedItems){
-        const words = tokenizeTitle(item.title);
-
-        for(const w of words){
-            wordScore[w] = (wordScore[w] || 0) + 2;
-        }
-
-        categoryScore[item.category] = (categoryScore[item.category] || 0) + 3;
-    }
-
-    return { wordScore, categoryScore };
-}
-
-function scoreMediaItem(item, profile){
-    let score = 0;
-
-    // Kategorie Bewertung
-    score += (profile.categoryScore[item.category] || 0);
-
-    // Titel Wörter Bewertung
-    const words = tokenizeTitle(item.title);
-    for(const w of words){
-        score += (profile.wordScore[w] || 0);
-    }
-
-    // Bonus: wenn Titel "replay" / "part" / "episode" etc enthält
-    if(item.title.toLowerCase().includes("replay")) score += 3;
-    if(item.title.toLowerCase().includes("part")) score += 2;
-    if(item.title.toLowerCase().includes("episode")) score += 2;
-
-    // leichter Zufall damit es nicht immer gleich ist
-    score += Math.random() * 2;
-
-    return score;
-}
-
-function getRecommendations(account, library, tab='video', limit=24){
-    const watchedSet = new Set(account.watched || []);
-
-    // Nur ungeschaut
-    let candidates = library.filter(v => v.type === tab && !watchedSet.has(v.title));
-
-    if(candidates.length === 0) return [];
-
-    // Profil bauen
-    const profile = buildUserTasteProfile(account, library);
-
-    // Scoring
-    candidates = candidates.map(v => ({
-        ...v,
-        score: scoreMediaItem(v, profile)
-    }));
-
-    // Sortieren nach Score
-    candidates.sort((a,b) => b.score - a.score);
-
-    // Top X zurückgeben
-    return candidates.slice(0, limit);
-}
-
-
 function tokenize(text){
     return text
         .toLowerCase()
@@ -527,17 +615,11 @@ function buildProfile(account, library){
 
     for(const item of library){
         if(!watched.has(item.title)) continue;
-
-        // Kategorie trainieren
         categoryScore[item.category] = (categoryScore[item.category] || 0) + 5;
-
-        // Wörter trainieren
-        const words = tokenize(item.title);
-        for(const w of words){
+        for(const w of tokenize(item.title)){
             wordScore[w] = (wordScore[w] || 0) + 2;
         }
     }
-
     return { wordScore, categoryScore };
 }
 
@@ -565,42 +647,22 @@ function scoreItem(item, profile){
     return score;
 }
 
-function diversify(items, limit=24){
-    const result = [];
-    const catCount = {};
-
-    for(const item of items){
-        const c = item.category;
-        catCount[c] = catCount[c] || 0;
-
-        // max 4 pro category in den top results
-        if(catCount[c] >= 4) continue;
-
-        result.push(item);
-        catCount[c]++;
-
-        if(result.length >= limit) break;
-    }
-
-    return result;
-}
-
-function getAIRecommendations(account, library, type, limit=24){
+function getAIRecommendations(account, library, type, limit=24) {
     const watched = new Set(account.watched || []);
     const profile = buildProfile(account, library);
 
-    let candidates = library.filter(v => v.type === type && !watched.has(v.title));
+    const candidates = library
+        .filter(v => v.type === type && !watched.has(v.title))
+        .map(v => ({ ...v, score: scoreItem(v, profile) }))
+        .sort((a,b) => b.score - a.score);
 
-    if(candidates.length === 0) return [];
-
-    candidates = candidates.map(v => ({
-        ...v,
-        score: scoreItem(v, profile)
-    }));
-
-    candidates.sort((a,b) => b.score - a.score);
-
-    return diversify(candidates, limit);
+    const catCount = {};
+    return candidates.filter(item => {
+        catCount[item.category] = catCount[item.category] || 0;
+        if(catCount[item.category] >= 4) return false;
+        catCount[item.category]++;
+        return true;
+    }).slice(0, limit);
 }
 
 // --- Beispiel: Library greift Cookie ab ---
@@ -631,7 +693,7 @@ app.get('/library', async (req,res)=>{
                 <div class="media-info">
                     <h3>${v.title}</h3>
                     <small>${v.category}</small>
-                    <a href="/play?tab=${v.type}&cat=${encodeURIComponent(v.category)}&path=${encodeURIComponent(v.path)}">▶ Play</a>
+                    <a href="/play?tab=${v.type}&cat=${encodeURIComponent(v.category)}&path=${encodeURIComponent(v.path.replaceAll(/\\/g, "/").replaceAll(config.videoPath, "").replaceAll(config.musicPath, ""))}">▶ Play</a>
                 </div>
             </div>
         `;
@@ -767,18 +829,19 @@ app.get('/play', async (req,res)=>{
     const account = accounts.find(a=>a.username===user);
 
     let library = await fs.readJson(libraryFile).catch(()=>[]);
-    let recommend = library.filter(v => !account?.watched.includes(v.title) && v.path !== mediaPath);
+    let recommend = library.find(v => !account?.watched.includes(v.title) && v.path !== mediaPath);
     if(account?.lastCategory){
-        recommend = recommend.sort(v => v.category === account.lastCategory ? -1 : 1)[0];
-    } else {
-        recommend = recommend[0];
+        const catRec = library.find(v => v.category === account.lastCategory && !account.watched.includes(v.title));
+        if(catRec) recommend = catRec;
     }
 
-    res.send(renderPage(`Play ${tab}`, `
+    res.send(renderPage(`Nova Play • ${tab}`, `
         <div class="player-wrapper">
             <${tag} id="mediaPlayer" autoplay>
                 <source src="${source}/${encodeURIComponent(cat + "/" + fileName)}">
             </${tag}>
+
+            ${tab === 'music' ? '<div class="audio-placeholder">🎵 Musik läuft...</div>' : ''}
             
             <!-- Custom Controls -->
             <div class="custom-controls" id="customControls">
@@ -843,7 +906,7 @@ app.get('/play', async (req,res)=>{
             function showControls(){
                 controls.classList.add('visible');
                 clearTimeout(hideTimeout);
-                hideTimeout = setTimeout(()=>{ controls.classList.remove('visible'); }, 3000);
+                if("${tab}".toLowerCase() != "music") {hideTimeout = setTimeout(()=>{ controls.classList.remove('visible'); }, 3000);}
             }
             wrapper.addEventListener('mousemove', showControls);
             wrapper.addEventListener('click', showControls);
@@ -870,12 +933,12 @@ app.get('/play', async (req,res)=>{
         </script>
 
         <style>
-            .player-wrapper{position:relative; max-width:900px; margin:20px auto;}
+            .player-wrapper{position:absolute; top:50%; left:50%; width: 80%; transform: translate(-50%,-50%); max-width:900px; margin:20px auto;height: ${tab.toLowerCase() == "music" ? "stretch" : "max-content"};}
             video, audio{width:100%; border-radius:10px; background:#000; display:block;}
 
             .custom-controls{
                 position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; cursor:none;
-                display:flex; flex-direction:column; justify-content:space-between; opacity:0; transition:opacity 0.5s;
+                display:flex; flex-direction:column; justify-content:space-between; opacity:0; transition:opacity 0.5s; z-index: 5;
             }
             .custom-controls.visible{opacity:1; pointer-events:auto; cursor: unset;}
             .custom-controls button{pointer-events:auto; background:none; border:none; color:#fff; font-size:1.2rem; cursor:pointer;}
@@ -903,15 +966,49 @@ app.get('/play', async (req,res)=>{
             }
             .post-overlay.fade-in{ opacity:1; transform:translateY(0); backdrop-filter: blur(8px); display:flex; }
             .player-wrapper.ended video{ filter: blur(8px); transition: filter 0.7s ease;}
+
+            /* Audio Player */
+            audio {
+              width: 100%;
+              height: 50vh; /* sichtbarer Player */
+              background: linear-gradient(135deg, #1e1e2f, #3a3a5c);
+              border-radius: 15px;
+              box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+              position: relative;
+              z-index: 1;
+            }
+
+            /* Overlay für Musik */
+            .audio-placeholder{
+              position:absolute;
+              top:0; left:0; width:100%; height:100%;
+              display:flex; justify-content:center; align-items:center;
+              font-size:3rem; color:#ffdd55;
+              pointer-events:none; /* Audio klickbar bleibt */
+              background: linear-gradient(to bottom, rgba(30,30,50,0.8), rgba(58,58,92,0.6));
+              border-radius:15px;
+              z-index:2;
+              animation: pulse 2.5s infinite;
+              padding: 50px;
+              z-index: -1;
+              transform: translate(-50px, -50px);
+            }
+
+            /* Leicht pulsierende Musiknote */
+            @keyframes pulse{
+              0%, 100%{ transform: scale(1) translate(-50px, -50px); opacity:0.8; }
+              50% { transform: scale(1.1) translate(-50px, -50px); opacity:1; }
+            }
         </style>
-    `, "${tab} Player"));
+    `, `${tab} Player`));
 });
 
 // --- Rescan ---
 app.get('/scan', async (req,res)=>{
     const conf = await fs.readJson(configFile);
-    if(conf.videoPath) await scanMedia(conf.videoPath,'video');
-    if(conf.musicPath) await scanMedia(conf.musicPath,'music');
+    if(conf.videoPath) scanMedia(conf.videoPath,'video');
+    if(conf.videoPath) generateThumbnails(conf.videoPath);
+    if(conf.musicPath) scanMedia(conf.musicPath,'music');
     const backURL = req.get('referer') || '/';
     res.redirect(backURL);
 });
